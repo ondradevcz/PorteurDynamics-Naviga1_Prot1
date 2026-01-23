@@ -1,0 +1,85 @@
+struct Enc {
+  uint8_t a, b;
+  long value;
+  uint8_t state;          // poslední 2-bit stav
+  int8_t sub;             // akumulace subkroků
+  unsigned long lastUs;   // debounce
+};
+
+static const int8_t LUT[16] = {
+  0, -1,  1,  0,
+  1,  0,  0, -1,
+ -1,  0,  0,  1,
+  0,  1, -1,  0
+};
+
+// tvoje piny: (2,3)(4,5)(6,7)(8,9)
+Enc enc[4] = {
+  {2,3, 0,0,0,0},
+  {4,5, 0,0,0,0},
+  {6,7, 0,0,0,0},
+  {8,9, 0,0,0,0}
+};
+
+// Když to cuká: 300–800
+const unsigned long DEBOUNCE_US = 300;
+
+// Když ti to skáče o 2 na klik, dej 2. Pokud o 4, dej 4.
+const int8_t STEPS_PER_CLICK = 2;
+
+inline uint8_t readState(uint8_t a, uint8_t b) {
+  return (digitalRead(a) ? 2 : 0) | (digitalRead(b) ? 1 : 0);
+}
+
+inline void updateEnc(Enc &e) {
+  unsigned long now = micros();
+  if (now - e.lastUs < DEBOUNCE_US) return;
+
+  uint8_t curr = readState(e.a, e.b);
+  uint8_t idx  = (uint8_t)((e.state << 2) | curr);
+  int8_t step  = LUT[idx];
+
+  e.state = curr;
+
+  if (step != 0) {
+    e.lastUs = now;
+    e.sub += step;
+
+    if (e.sub >= STEPS_PER_CLICK)  { e.value++; e.sub = 0; }
+    if (e.sub <= -STEPS_PER_CLICK) { e.value--; e.sub = 0; }
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  for (int i = 0; i < 4; i++) {
+    pinMode(enc[i].a, INPUT_PULLUP);
+    pinMode(enc[i].b, INPUT_PULLUP);
+
+    // inicializace stavů
+    enc[i].value = 0;
+    enc[i].sub = 0;
+    enc[i].lastUs = 0;
+    enc[i].state = readState(enc[i].a, enc[i].b);
+  }
+}
+
+void loop() {
+  for (int i = 0; i < 4; i++) updateEnc(enc[i]);
+
+  // Serial tisk max 5 Hz (jinak to často "seká")
+  static unsigned long lastPrint = 0;
+  static long lastVal[4] = {0,0,0,0};
+
+  if (millis() - lastPrint >= 200) {
+    lastPrint = millis();
+    for (int i = 0; i < 4; i++) {
+      if (enc[i].value != lastVal[i]) {
+        Serial.print("E"); Serial.print(i+1);
+        Serial.print(": "); Serial.println(enc[i].value);
+        lastVal[i] = enc[i].value;
+      }
+    }
+  }
+}
