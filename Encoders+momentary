@@ -1,0 +1,137 @@
+struct Enc {
+  uint8_t a, b;
+  long value;
+  uint8_t state;          // poslední 2-bit stav
+  int8_t sub;             // akumulace subkroků
+  unsigned long lastUs;   // debounce
+};
+
+static const int8_t LUT[16] = {
+  0, -1,  1,  0,
+  1,  0,  0, -1,
+ -1,  0,  0,  1,
+  0,  1, -1,  0
+};
+
+// encodery: (2,3)(4,5)(6,7)(8,9)
+Enc enc[4] = {
+  {2,3, 0,0,0,0},
+  {4,5, 0,0,0,0},
+  {6,7, 0,0,0,0},
+  {8,9, 0,0,0,0}
+};
+
+// ===== momentary tlačítka (Pro Micro)
+// zapojení: pin tlačítka -> GND, druhý -> uvedený pin (INPUT_PULLUP)
+const uint8_t BTN_COUNT = 8;
+const uint8_t btnPins[BTN_COUNT] = {10, 14, 15, 16, A0, A1, A2, A3};
+
+// debounce tlačítek
+const unsigned long BTN_DEBOUNCE_MS = 20;
+bool btnStable[BTN_COUNT];
+bool btnLastRead[BTN_COUNT];
+unsigned long btnLastChangeMs[BTN_COUNT];
+
+// encoder parametry
+const unsigned long DEBOUNCE_US = 300;
+const int8_t STEPS_PER_CLICK = 2;
+
+inline uint8_t readState(uint8_t a, uint8_t b) {
+  return (digitalRead(a) ? 2 : 0) | (digitalRead(b) ? 1 : 0);
+}
+
+inline void updateEnc(Enc &e) {
+  unsigned long now = micros();
+  if (now - e.lastUs < DEBOUNCE_US) return;
+
+  uint8_t curr = readState(e.a, e.b);
+  uint8_t idx  = (uint8_t)((e.state << 2) | curr);
+  int8_t step  = LUT[idx];
+
+  e.state = curr;
+
+  if (step != 0) {
+    e.lastUs = now;
+    e.sub += step;
+
+    if (e.sub >= STEPS_PER_CLICK)  { e.value++; e.sub = 0; }
+    if (e.sub <= -STEPS_PER_CLICK) { e.value--; e.sub = 0; }
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  // encodery
+  for (int i = 0; i < 4; i++) {
+    pinMode(enc[i].a, INPUT_PULLUP);
+    pinMode(enc[i].b, INPUT_PULLUP);
+
+    enc[i].value = 0;
+    enc[i].sub = 0;
+    enc[i].lastUs = 0;
+    enc[i].state = readState(enc[i].a, enc[i].b);
+  }
+
+  // tlačítka
+  for (int i = 0; i < BTN_COUNT; i++) {
+    pinMode(btnPins[i], INPUT_PULLUP);
+    bool r = digitalRead(btnPins[i]); // HIGH=puštěno, LOW=stisk
+    btnStable[i] = r;
+    btnLastRead[i] = r;
+    btnLastChangeMs[i] = millis();
+  }
+
+  // pinout do Serialu
+  Serial.println("=== PINOUT (Pro Micro) ===");
+  Serial.println("Encoders:");
+  Serial.println("E1: A=D2  B=D3");
+  Serial.println("E2: A=D4  B=D5");
+  Serial.println("E3: A=D6  B=D7");
+  Serial.println("E4: A=D8  B=D9");
+  Serial.println("Buttons (momentary -> GND, INPUT_PULLUP):");
+  for (int i = 0; i < BTN_COUNT; i++) {
+    Serial.print("BTN"); Serial.print(i+1);
+    Serial.print(": ");
+    Serial.println(btnPins[i]); // u A0..A3 to Serial vypíše jako číslo, ale je to OK
+  }
+  Serial.println("==========================");
+}
+
+void loop() {
+  // encodery
+  for (int i = 0; i < 4; i++) updateEnc(enc[i]);
+
+  // tlačítka (debounce + eventy)
+  unsigned long nowMs = millis();
+  for (int i = 0; i < BTN_COUNT; i++) {
+    bool r = digitalRead(btnPins[i]);
+
+    if (r != btnLastRead[i]) {
+      btnLastRead[i] = r;
+      btnLastChangeMs[i] = nowMs;
+    }
+
+    if ((nowMs - btnLastChangeMs[i]) >= BTN_DEBOUNCE_MS && r != btnStable[i]) {
+      btnStable[i] = r;
+      Serial.print("BTN"); Serial.print(i+1);
+      Serial.print(": ");
+      Serial.println(btnStable[i] == LOW ? "PRESS" : "RELEASE");
+    }
+  }
+
+  // tisk encoderů max 5 Hz
+  static unsigned long lastPrint = 0;
+  static long lastVal[4] = {0,0,0,0};
+
+  if (nowMs - lastPrint >= 200) {
+    lastPrint = nowMs;
+    for (int i = 0; i < 4; i++) {
+      if (enc[i].value != lastVal[i]) {
+        Serial.print("E"); Serial.print(i+1);
+        Serial.print(": "); Serial.println(enc[i].value);
+        lastVal[i] = enc[i].value;
+      }
+    }
+  }
+}
